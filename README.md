@@ -1,86 +1,106 @@
 <div align="center">
-  <img src="https://hhrsc.github.io/favicon.png" width="88" height="88" alt="Clipboard 图标" />
-  <h1>Clipboard</h1>
-  <p><strong>复制以后，依然找得到。</strong></p>
-  <p>一款本地优先的 Windows 剪贴板工具。保存文字与图片历史，自由选取需要的内容，再复制为纯文本、Markdown、HTML 或单行文本。</p>
-
-  <p>
-    <a href="https://hhrsc.github.io/website/">官网</a> ·
-    <a href="https://github.com/hhrsc/clipboard/releases/download/v0.1.0/Clipboard_0.1.0_x64-setup.exe"><strong>下载 Windows 版</strong></a> ·
-    <a href="https://github.com/hhrsc/clipboard/releases/tag/v0.1.0">版本说明</a> ·
-    <a href="https://github.com/hhrsc/clipboard/issues/new/choose">问题与建议</a>
-  </p>
+  <img src="src-tauri/icons/128x128.png" width="96" height="96" alt="剪贴板图标" />
+  <h1>Clipboard Manager</h1>
+  <p><strong>复制过的东西，回头还找得到。</strong></p>
+  <p>一个本地优先的 Windows 剪贴板管理器：保存文字与图片历史，分类、搜索、一键复制，附带一个本地密码本。</p>
 
   <p>
     <img alt="Windows 10 和 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-2d6f8e?logo=windows11&logoColor=white" />
-    <img alt="版本 0.1.0" src="https://img.shields.io/badge/version-0.1.0-bb5f43" />
-    <img alt="本地优先" src="https://img.shields.io/badge/data-local%20first-3d7055" />
-    <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-5c554d" />
+    <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white" />
+    <img alt="Svelte 5" src="https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white" />
+    <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-5c554d" />
   </p>
 </div>
 
-![Clipboard 的文字历史与详情界面](https://hhrsc.github.io/marketing/clipboard-recent.webp)
+## 它解决什么问题
 
-## 为什么做它
+Windows 自带的 `Win + V` 只保留最近几十条，记录一多就没有办法了：找不到、不能分类、图片管理不了、也没法把一段富文本转成纯文本再复制。
 
-Windows 的 `Win + V` 适合临时找回最近内容，但当记录变多，搜索、分类、图片管理和格式转换就会开始浪费时间。Clipboard 把这些操作集中在一个安静的桌面窗口里：打开、找到、复制，然后继续手上的事。
+这个工具把「找回来、整理好、再复制」这三件事放进一个常驻托盘的小窗口里：
 
-## 使用指南
+- 按 **Alt + C** 随时唤出，用完点 × 收进托盘（不是退出）
+- 文字和图片分开放，各自有历史列表
+- 自定义分类，搜索框即时过滤
+- 想真退出：右下角托盘图标右键 → Quit
 
-- [Windows 剪贴板历史怎么用？Win + V 与 Clipboard 选择指南](https://hhrsc.github.io/website/guides/windows-clipboard-history/)
-- [如何把文字复制为 Markdown、HTML、纯文本或单行文本](https://hhrsc.github.io/website/guides/copy-text-as-markdown-html/)
+## 功能
 
-## 现在能做什么
+**剪贴板历史**
 
-- 保存文字、富文本和图片历史
-- 搜索、分类、置顶并设置普通文本保留时间
-- 在详情中自由选取真正需要的文字
-- 复制为纯文本、Markdown、HTML 或单行文本
-- 使用自定义全局快捷键快速打开
-- 在本机使用加密密码库整理常用账号信息
+- 自动记录复制的文字和图片，图片保存为缩略图 + 原图
+- 分类标签（默认「全部」，可自建、重命名、删除）
+- 搜索框按内容过滤，中英文都支持
+- 点一下即复制回剪贴板，右键菜单可预览、删除
+- 文字条目 hover 才显示操作按钮，减少视觉噪声
 
-## 本地优先
+**密码本**
 
-当前版本不要求账户，没有云同步，也没有在应用内接入广告或行为分析。剪贴板历史与密码库保存在你的 Windows 设备上。
+- 按用途记录账号密码，支持显示/隐藏
+- 与剪贴板历史分开存储，互不干扰
 
-问题反馈是公开的，请勿在 Issue 中粘贴密码、令牌或真实剪贴板隐私内容。完整说明见[隐私政策](https://hhrsc.github.io/website/privacy-policy/)。
+**界面**
 
-## 下载
+- Liquid Glass 风格：多层半透明玻璃、边缘高光、随背景光斑折射
+- 按钮有悬停光泽扫过、按下内凹回弹的手感
+- 右上角 **中 / EN** 一键切换整个界面语言，选择会记住
+- 顶部胶囊分段控件，切换有弹簧缓动
+- 尊重系统「减少动态效果」设置
 
-| 项目 | 信息 |
-| --- | --- |
-| 当前版本 | `0.1.0` |
-| 平台 | 64 位 Windows 10 / 11 |
-| 安装包大小 | 3.52 MB |
-| SHA-256 | `C5BE35E575E698696C376DF46247D4A670D0C8880098F5F2EAD5B7F921B8AE4C` |
+**系统集成**
 
-[从 GitHub Releases 下载](https://github.com/hhrsc/clipboard/releases/tag/v0.1.0)。独立开发者的新应用可能暂时触发 Windows SmartScreen 提醒，请只使用官网或本仓库的版本页，并核对上面的校验值。
+- 全局热键 `Alt + C`（被其他软件占用时不崩溃，只写日志）
+- 托盘常驻，关闭窗口仅隐藏
+- 单实例：重复启动不会开第二个，只把原窗口唤到前台
+- **不写开机自启动项**（早期版本会强制写入，已移除）
 
-## 当前边界
+## 数据存在哪
 
-Clipboard 仍处于早期阶段，目前只提供 64 位 Windows 版本，也没有跨设备同步。功能和数据安全相关问题会优先处理；如果你愿意，请描述自己的真实工作流，而不只是给出一个功能名称。
+全部在本机 WebView 的 `localStorage` 里，不上传、不联网、无账号、无统计。
 
-- [报告可以复现的问题](https://github.com/hhrsc/clipboard/issues/new?template=bug_report.yml)
-- [提交真实场景中的功能建议](https://github.com/hhrsc/clipboard/issues/new?template=feature_request.yml)
-- [观看 20 秒产品演示](https://github.com/hhrsc/clipboard/releases/download/v0.1.0/clipboard-promo-vertical-v1.mp4)
+卸载程序或清除应用数据会一并删除历史记录，重要内容请自己另外留一份。
 
-## 开发
+## 怎么运行
 
-技术栈：Tauri 2、Svelte 5 / SvelteKit、Rust。
+**方式一：直接跑编译好的 exe**
+
+```
+my-clipboard.exe
+```
+
+双击即可，或在项目根目录双击 `启动.bat`。
+
+**方式二：自己编译**
+
+需要 Node.js 18+、Rust 工具链、Visual Studio C++ 生成工具。
 
 ```powershell
 npm ci
-npm run check
-npm run tauri -- dev
+npm run build                                      # 构建前端产物
+cd src-tauri
+cargo build --release --features custom-protocol --target x86_64-pc-windows-msvc
 ```
 
-正式 Windows 构建：
+产物在 `src-tauri\target\x86_64-pc-windows-msvc\release\my-clipboard.exe`，复制到根目录覆盖 `my-clipboard.exe` 即可。
+
+> `--features custom-protocol` 不能省。少了它编译出来的程序会去连 `http://localhost:1420` 的开发服务器，双击后看到的是「无法访问此页面」。
+
+**开发时热重载**
 
 ```powershell
-npm run tauri -- build --no-bundle --target x86_64-pc-windows-msvc
+npm run tauri dev
 ```
 
-浏览器预览不能代替 Tauri 原生功能验收。涉及密码库、重置或导入导出时，请使用隔离测试资料。
+## 已知限制
+
+- 只有 64 位 Windows 版本，没有跨设备同步
+- 密码本没有做加密存储，敏感信息请谨慎使用
+- 剪贴板历史记录条数没有上限，长期使用需要手动清理
+
+## 来源
+
+本项目基于 [hhrsc/clipboard](https://github.com/hhrsc/clipboard)（MIT）修改，在原版基础上重做了界面（Liquid Glass）、加入中英文切换、单实例保护，并移除了强制开机自启动。
+
+原版的设计思路与基础功能归属原作者。
 
 ## License
 
