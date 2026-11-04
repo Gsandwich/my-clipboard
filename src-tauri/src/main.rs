@@ -1,0 +1,457 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use clipboard_rs::common::RustImage;
+use clipboard_rs::{Clipboard, ClipboardContext, ContentFormat, RustImageData};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::Manager;
+use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+const MAX_IMAGE_FILE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_IMAGE_DATA_BYTES: usize = 20 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION: u32 = 8192;
+const MAX_IMAGE_PIXELS: u64 = 20_000_000;
+const IMAGE_HISTORY_DIR_NAME: &str = "history-images";
+const MAX_HISTORY_IMAGE_FILES: usize = 10;
+const MAX_HISTORY_IMAGE_TOTAL_BYTES: u64 = 80 * 1024 * 1024;
+
+fn validate_image_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("image dimensions are invalid".to_string());
+    }
+    if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        return Err(format!(
+            "image dimensions exceed limit (max {}x{})",
+            MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION
+        ));
+    }
+    let pixel_count = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| "image dimensions overflow".to_string())?;
+    if pixel_count > MAX_IMAGE_PIXELS {
+        return Err(format!(
+            "image pixel count exceeds limit (max {} pixels)",
+            MAX_IMAGE_PIXELS
+        ));
+    }
+    Ok(())
+}
+
+fn validate_image_file(path: &Path) -> Result<(), String> {
+    let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if metadata.len() > MAX_IMAGE_FILE_BYTES {
+        return Err(format!(
+            "image file exceeds size limit (max {} bytes)",
+            MAX_IMAGE_FILE_BYTES
+        ));
+    }
+
+    let reader = image::ImageReader::open(path).map_err(|e| e.to_string())?;
+    let reader = reader.with_guessed_format().map_err(|e| e.to_string())?;
+    let (width, height) = reader.into_dimensions().map_err(|e| e.to_string())?;
+    validate_image_dimensions(width, height)
+}
+
+fn estimate_base64_decoded_len(base64: &str) -> Result<usize, String> {
+    if base64.is_empty() {
+        return Err("image payload is empty".to_string());
+    }
+    if base64.len() % 4 != 0 {
+        return Err("invalid base64 payload length".to_string());
+    }
+
+    let padding = base64
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|&&b| b == b'=')
+        .count();
+    let decoded_len = base64
+        .len()
+        .checked_div(4)
+        .and_then(|v| v.checked_mul(3))
+        .and_then(|v| v.checked_sub(padding))
+        .ok_or_else(|| "base64 payload is too large".to_string())?;
+
+    Ok(decoded_len)
+}
+
+fn validate_image_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.is_empty() {
+        return Err("image payload is empty".to_string());
+    }
+    if bytes.len() > MAX_IMAGE_DATA_BYTES {
+        return Err(format!(
+            "image payload exceeds size limit (max {} bytes)",
+            MAX_IMAGE_DATA_BYTES
+        ));
+    }
+
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let (width, height) = reader.into_dimensions().map_err(|e| e.to_string())?;
+    validate_image_dimensions(width, height)
+}
+
+fn history_image_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let mut dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    dir.push(IMAGE_HISTORY_DIR_NAME);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn cleanup_history_image_dir(dir: &Path) -> Result<(), String> {
+    let mut files: Vec<(PathBuf, SystemTime, u64)> = Vec::new();
+
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+        files.push((path, modified, metadata.len()));
+    }
+
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut total_bytes = 0_u64;
+    for (idx, (path, _, len)) in files.iter().enumerate() {
+        total_bytes = total_bytes.saturating_add(*len);
+        if idx >= MAX_HISTORY_IMAGE_FILES || total_bytes > MAX_HISTORY_IMAGE_TOTAL_BYTES {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_history_image_path(raw: &str) -> Option<PathBuf> {
+    if raw.trim().is_empty() {
+        return None;
+    }
+    let cleaned = raw.strip_prefix("file|").unwrap_or(raw).trim();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(cleaned))
+    }
+}
+
+fn path_is_within_dir(path: &Path, dir: &Path) -> bool {
+    match (path.canonicalize(), dir.canonicalize()) {
+        (Ok(p), Ok(d)) => p.starts_with(d),
+        _ => false,
+    }
+}
+
+#[tauri::command]
+fn set_clipboard_text(text: String) -> Result<(), String> {
+    let ctx = ClipboardContext::new().map_err(|e| e.to_string())?;
+    ctx.set_text(text).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_clipboard_data() -> Result<Option<(String, String)>, String> {
+    let ctx = ClipboardContext::new().map_err(|e| e.to_string())?;
+
+    if ctx.has(ContentFormat::Files) {
+        if let Ok(files) = ctx.get_files() {
+            if let Some(file_path) = files.first() {
+                let path = Path::new(file_path);
+                if path.is_file() {
+                    if validate_image_file(path).is_ok() {
+                        if let Ok(img) = image::open(path) {
+                            let mut buffer = std::io::Cursor::new(Vec::new());
+                            if img.write_to(&mut buffer, image::ImageFormat::Png).is_ok() {
+                                let png_bytes = buffer.into_inner();
+                                if png_bytes.len() <= MAX_IMAGE_DATA_BYTES {
+                                    let base64_str = STANDARD.encode(png_bytes);
+                                    return Ok(Some((
+                                        "image".to_string(),
+                                        format!("image|{}", base64_str),
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if ctx.has(ContentFormat::Image) {
+        if let Ok(image) = ctx.get_image() {
+            let (width, height) = image.get_size();
+            if validate_image_dimensions(width, height).is_ok() {
+                if let Ok(png_data) = image.to_png() {
+                    let png_bytes = png_data.get_bytes();
+                    if png_bytes.len() <= MAX_IMAGE_DATA_BYTES {
+                        let base64_str = STANDARD.encode(png_bytes);
+                        return Ok(Some(("image".to_string(), format!("image|{}", base64_str))));
+                    }
+                }
+            }
+        }
+    }
+
+    if ctx.has(ContentFormat::Text) {
+        if let Ok(text) = ctx.get_text() {
+            if !text.is_empty() {
+                return Ok(Some(("text".to_string(), text)));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+fn set_clipboard_image(base64: String) -> Result<(), String> {
+    let estimated_len = estimate_base64_decoded_len(&base64)?;
+    if estimated_len > MAX_IMAGE_DATA_BYTES {
+        return Err(format!(
+            "image payload exceeds size limit (max {} bytes)",
+            MAX_IMAGE_DATA_BYTES
+        ));
+    }
+
+    let ctx = ClipboardContext::new().map_err(|e| e.to_string())?;
+    let image_bytes = STANDARD.decode(base64).map_err(|e| e.to_string())?;
+    validate_image_bytes(&image_bytes)?;
+    let img_data = RustImageData::from_bytes(&image_bytes).map_err(|e| e.to_string())?;
+    ctx.set_image(img_data).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_clipboard_image_from_path(path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    let image_bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    validate_image_bytes(&image_bytes)?;
+
+    let ctx = ClipboardContext::new().map_err(|e| e.to_string())?;
+    let img_data = RustImageData::from_bytes(&image_bytes).map_err(|e| e.to_string())?;
+    ctx.set_image(img_data).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn persist_history_image(app: tauri::AppHandle, base64: String) -> Result<String, String> {
+    let estimated_len = estimate_base64_decoded_len(&base64)?;
+    if estimated_len > MAX_IMAGE_DATA_BYTES {
+        return Err(format!(
+            "image payload exceeds size limit (max {} bytes)",
+            MAX_IMAGE_DATA_BYTES
+        ));
+    }
+
+    let image_bytes = STANDARD.decode(base64).map_err(|e| e.to_string())?;
+    validate_image_bytes(&image_bytes)?;
+
+    let dir = history_image_dir(&app)?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let file_name = format!("img-{}-{}.png", stamp, std::process::id());
+    let file_path = dir.join(file_name);
+
+    std::fs::write(&file_path, image_bytes).map_err(|e| e.to_string())?;
+    cleanup_history_image_dir(&dir)?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn delete_history_images(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    let dir = history_image_dir(&app)?;
+    for raw in paths {
+        let Some(path) = normalize_history_image_path(&raw) else {
+            continue;
+        };
+        if path.exists() && path_is_within_dir(&path, &dir) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    cleanup_history_image_dir(&dir)?;
+    Ok(())
+}
+
+fn log_startup_error(app: &tauri::AppHandle, msg: &str) {
+    use std::io::Write as _;
+    if let Ok(dir) = app.path().app_log_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("startup.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(f, "[startup error] {}", msg);
+        }
+    }
+}
+
+const INSTANCE_PORT: u16 = 51_731;
+const INSTANCE_PING: &[u8] = b"clipboard-show-window";
+
+/// 尝试唤起已在运行的那个实例（通过本地端口通信）
+fn wake_running_instance() -> bool {
+    if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", INSTANCE_PORT)) {
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
+        if stream.write_all(INSTANCE_PING).is_ok() {
+            let _ = stream.flush();
+            return true;
+        }
+    }
+    false
+}
+
+/// 监听唤起请求：收到消息就把窗口重新显示出来
+fn spawn_wake_listener(app: tauri::AppHandle, listener: TcpListener) {
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 64];
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+            if let Ok(n) = stream.read(&mut buf) {
+                if n >= INSTANCE_PING.len() {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn main() {
+    // 单实例保护：端口被占用说明已经有一个实例在托盘里跑着。
+    // 此时只唤出原窗口然后退出，避免重复注册全局快捷键导致 setup 失败而闪退。
+    let instance_listener = match TcpListener::bind(("127.0.0.1", INSTANCE_PORT)) {
+        Ok(listener) => Some(listener),
+        Err(_) => {
+            if wake_running_instance() {
+                return;
+            }
+            // 端口被其它程序占用：照常启动，只是不做单实例保护
+            None
+        }
+    };
+
+    tauri::Builder::default()
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .setup(move |app| {
+            if let Some(listener) = instance_listener {
+                spawn_wake_listener(app.handle().clone(), listener);
+            }
+
+            // ==========================================
+            // 1. 初始化【开机自启动】插件（默认关闭，不写入启动项）
+            // ==========================================
+            // 插件只注册能力、不开启自启动；如需恢复开机启动，
+            // 取消下面 enable() 的注释即可（会重新写入系统启动项）。
+            app.handle().plugin(tauri_plugin_autostart::init(
+                MacosLauncher::LaunchAgent,
+                Some(vec![]),
+            ))?;
+            // let _ = app.autolaunch().enable();
+
+            // ==========================================
+            // 2. 注册【全局快捷键 Alt + V】
+            // ==========================================
+            let alt_v_shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyC);
+            let alt_v_clone = alt_v_shortcut.clone();
+
+            app.handle().plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(move |app, shortcut, event| {
+                        if shortcut == &alt_v_clone {
+                            match event.state() {
+                                ShortcutState::Pressed => {
+                                    if let Some(window) = app.get_webview_window("main") {
+                                        let is_visible = window.is_visible().unwrap_or(false);
+                                        let is_minimized = window.is_minimized().unwrap_or(false);
+
+                                        // 只要窗口可见就允许隐藏，避免开机自启动时因未聚焦导致看起来无响应
+                                        if is_visible && !is_minimized {
+                                            let _ = window.hide();
+                                        } else {
+                                            // 从隐藏或最小化状态恢复并抢焦点
+                                            let _ = window.unminimize();
+                                            let _ = window.show();
+                                            let _ = window.set_focus();
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    })
+                    .build(),
+            )?;
+            // 真正把快捷键挂载到系统上：注册失败只记录日志，不再让程序直接崩溃
+            // （Alt+C 可能被其它软件占用）
+            if let Err(err) = app.global_shortcut().register(alt_v_shortcut) {
+                log_startup_error(app.handle(), &format!("注册全局快捷键 Alt+C 失败: {err}"));
+            }
+
+            // ==========================================
+            // 3. 配置【右下角系统托盘】
+            // ==========================================
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&quit_i])?;
+
+            let mut tray_builder = TrayIconBuilder::new()
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "quit" {
+                        app.exit(0);
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    // 左键点击托盘图标也弹窗
+                    if let TrayIconEvent::Click { .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                });
+
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+
+            tray_builder.build(app)?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            set_clipboard_text,
+            get_clipboard_data,
+            set_clipboard_image,
+            set_clipboard_image_from_path,
+            persist_history_image,
+            delete_history_images
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

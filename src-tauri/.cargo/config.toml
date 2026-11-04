@@ -1,0 +1,7 @@
+# 本机访问 crates.io 直连很慢/会卡住，这里换成 rsproxy 镜像加速依赖下载。
+# 如果以后不需要镜像，删掉这个文件即可。
+[source.crates-io]
+replace-with = "rsproxy-sparse"
+
+[source.rsproxy-sparse]
+registry = "sparse+https://rsproxy.cn/index/"
